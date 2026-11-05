@@ -1,0 +1,36 @@
+{
+  "name": "angelspace",
+  "version": "0.2.0",
+  "description": "The AngelSpace system: compiles a multi-file .ass workspace (includes, pre-compile variables, conditionals) into the single .as script Angel loads. Clone it, run npm run create, and the repo is your project.",
+  "private": true,
+  "type": "module",
+  "author": "kodalee",
+  "repository": { "type": "git", "url": "git+https://github.com/kodalee/angelspace.git" },
+  "keywords": ["angelscript", "angel", "preprocessor", "bundler"],
+  "exports": {
+    ".": "./toolchain/project.ts",
+    "./*": "./toolchain/*.ts"
+  },
+  "scripts": {
+    "create": "node toolchain/cli.ts create",
+    "build": "node toolchain/cli.ts compile",
+    "build:install": "node toolchain/cli.ts compile --install",
+    "watch": "node toolchain/cli.ts watch",
+    "where": "node toolchain/cli.ts where",
+    "vars": "node toolchain/cli.ts vars",
+    "help": "node toolchain/cli.ts help",
+    "angelspace": "node toolchain/cli.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node toolchain/test/test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

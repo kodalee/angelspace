@@ -1,0 +1,291 @@
+# AngelSpace
+
+> AngelSpace is a preprocessor/bundler for Angel scripts (AngelScript run by the Angel "Universal API" overlay, docs: https://echo-23.gitbook.io/angel). A project is a folder of `.ass` source files plus `angelspace.yaml`; the compiler follows `#[include]`s from `main.ass`, evaluates `#[if]` blocks, injects pre-compile variables, and writes ONE `.as` file (Angel loads exactly one file per script and has no include mechanism). This repo (https://github.com/kodalee/angelspace) is the workspace itself: users clone it, run `npm run create` (which adds `angelspace.yaml` and `src/` to the repo root), and write their script in `src/`. The compiler/CLI lives in `toolchain/` (TypeScript run directly by Node >= 22.18, or Bun), and every command is an npm script (`npm run build`). `npx create-angelspace@latest` is an optional one-liner for the same thing. The VS Code extension (https://github.com/kodalee/angelspace-vscode) does no compiling itself; it runs the repo's toolchain (`node toolchain/cli.ts serve`) and shows the results.
+
+Key facts for generating code:
+
+- Source files use the `.ass` extension. The output is a single `.as` file in `dist/`.
+- Everything AngelSpace-specific is either `#[ ... ]` or `$name`. Nothing else differs from AngelScript.
+- Output order is dependencies first: each file is emitted once, at its first `#[include]`, depth-first, so `main.ass`'s own code ends up last.
+- Every Angel script needs `bool main()` (return true to stay loaded; false unloads). `void on_unload()` is optional.
+- Angel scripts live in `%APPDATA%\scripts`. After adding a file there, reopen the Angel menu to refresh the list.
+
+## Project layout
+
+```
+toolchain/               the compiler/CLI; serves only the folder it sits in (the repo root)
+toolchain/test/          the toolchain's tests (npm test)
+package.json             npm scripts: create, build, build:install, watch, where, vars, help, angelspace
+angelspace.yaml          config (see below), written by `npm run create`; sits next to toolchain/
+.vscode/                 editor settings and build tasks, written by `npm run create`
+src/main.ass             entry point (config key `main`, relative to `src`)
+src/**/*.ass             modules, reached only through #[include]
+dist/<name>.as           compiled output (config `output.file`, default "#[projectName].as")
+dist/<name>.as.map.json  line map: output line -> [source index, source line]
+```
+
+## Directives
+
+All directives are written `#[ ... ]` and may appear inline or alone on a line. A control or statement directive that is alone on its line removes that whole line, newline included.
+
+### Include
+
+```
+#[include "/core/memory.ass"]    leading "/" = the src folder
+#[include "../sdk/bones.ass"]    otherwise relative to the including file's folder
+#[include "helpers.ass"]
+```
+
+- Include-once: the second and later includes of the same file are skipped.
+- Expansion happens in place, depth-first. Put includes at the top of a file so its dependencies land above it.
+- A cycle (A includes B includes A) is skipped and logged. This is fine in AngelScript, because global names resolve module-wide.
+- Path resolution: the exact path; then `x.as` -> `x.ass`; then a path with no extension -> `+.ass`. Paths may not leave `src`.
+- Any `.ass` file under `src` that is never included produces a warning and is not part of the build.
+
+### Conditionals
+
+```
+#[if EXPR] ... #[elif EXPR] ... #[elifn EXPR] ... #[else] ... #[endif]
+#[ifn EXPR] ...                  "if not"
+#[if channel == "beta"] inline(); #[endif]
+```
+
+- EXPR grammar: `||`, `&&`, comparisons (`== != < <= > >=`), unary `!`, parentheses. Literals are `"str"`, `'str'`, numbers (`1`, `1.0`, `0x10`, `1e3`), `true`, `false` and `null`. Plain identifiers are variables. `defined(name)` tests whether a variable exists.
+- Truthiness: false, null, 0, "" and an empty list are false; everything else is true.
+- Comparison rules:
+  - number vs number: numeric.
+  - two version-like strings (`^\d+(\.\d+)*$`): part by part, so "1.10" > "1.9".
+  - number vs string: by the number's exact source spelling (`version == "1.0"` is true for `version: 1.0`).
+  - other mixed types: never equal.
+- An undefined variable in an evaluated condition is an error. Branches that aren't taken are not evaluated.
+- An `#[if]` must be closed in the same file.
+
+### Messages
+
+```
+#[error "message"]   stop the build (put it inside an #[if] guard)
+#[warn "message"]    log a warning, continue
+#[info "message"]    log a note, continue
+```
+
+### Variable injection
+
+- `#[name]` is raw injection. It inserts the value as plain text: a string without quotes, a number with its exact spelling, a bool as true/false, null as null, and a list as comma-joined items.
+- `$name` is smart injection. It inserts a ready-to-use AngelScript literal:
+  - a string is double-quoted with `\\ \" \n \r \t \xHH` escapes
+  - numbers and bools are inserted as-is, null as `null`
+  - a list becomes `{a, b, c}`, with each element as a literal
+
+Example with `version: "1.0"`, `ids: [1, 2]`, `something: false`:
+
+```
+console::log("v#[version]");   -> console::log("v1.0");
+console::log($version);        -> console::log("1.0");
+bool b = $something;           -> bool b = false;
+array<int> a = $ids;           -> array<int> a = {1, 2};
+```
+
+### Contexts
+
+The compiler tracks AngelScript lexical state: code, `//` and `/* */` comments, and `"..."`, `'...'` and `"""heredoc"""` strings.
+
+- **Code:** all directives and `$name` work.
+- **Strings:** `#[name]` and `#[if]/#[elif]/#[else]/#[endif]` work. `#[include]`, `#[error]`, `#[warn]` and `#[info]` are errors. `$` is a literal character.
+- **Comments:** only `#[name]` for a known name is replaced (unknown names stay as written). Control directives and includes are inert, so `// #[include "x.ass"]` is a disabled include. `$` is literal.
+- **Escapes:** `\#[` outputs a literal `#[`. `$$` outputs a literal `$`. A lone `$` in code that isn't followed by a name is an error.
+
+## Variables
+
+The sources, in increasing priority:
+
+1. **Built-ins:**
+   - `angelSpaceVersion`
+   - `compileEpoch` (unix seconds; `SOURCE_DATE_EPOCH` pins it) and `compileEpochMs`
+   - `compileTime` (ISO-8601 UTC without milliseconds, e.g. "2026-11-05T06:24:48Z") and `compileDate` ("2026-11-05")
+   - `projectName`, `target` and `mainFile`
+   - `runtime` ("node"/"bun"), `runtimeVersion` and `hostOS`
+   - `__FILE__` and `__LINE__`, which resolve per use site (path relative to src, and line number)
+2. **`defines:` in angelspace.yaml.** Overriding a built-in triggers a warning.
+3. **Overrides:** the CLI `-D name=value` (repeatable), or in VS Code the `angelspace.overrides` setting, the "Override Variable…" command.
+
+Value types are string, number (exact spelling preserved), bool, null, and list of those. Maps are not allowed. On the command line, `-D x=true` becomes a bool, `-D x=1.0` a number, `-D x="a b"` or `-D x=abc` a string, and `-D x=null` null.
+
+Variable names must match `[A-Za-z_]\w*` and must not be one of: if ifn elif elifn else endif include error warn info defined true false null.
+
+## angelspace.yaml
+
+```yaml
+name: my_script                 # -> projectName (default: folder name)
+target: game.exe                # -> target
+src: src                        # default "src"
+main: main.ass                  # default "main.ass"
+defines:                        # user variables
+  version: "1.0"
+  channel: beta
+output:
+  dir: dist                     # ${ENV} expansion allowed
+  file: "#[projectName].as"     # template with #[var]
+  lineEndings: crlf             # crlf | lf
+  fileHeaders: true             # per-file "referenced by" comments
+  lineMap: true                 # write <file>.map.json
+  watermark:
+    enabled: true
+    lines:                      # each becomes "// " + line; #[var] allowed, plus fileCount, lineCount, buildHash, outputFile
+      - "Compiled with AngelSpace by Koda | Compiled at #[compileTime] / #[compileEpoch]"
+install:
+  enabled: false
+  dir: ${APPDATA}/scripts
+  overwrite: false              # false: refuse to replace a file whose first line lacks "AngelSpace"
+log:
+  level: verbose                # silent | error | warn | info | verbose | debug
+```
+
+Unknown keys produce warnings. The config is found by searching upward from the current directory, or given with `-c`.
+
+## Output format
+
+1. The watermark lines (`// ...`), then one blank line.
+2. Each file's content in emission order. When `fileHeaders` is on, each file is preceded by a header:
+   - `// <rel>.ass referenced by <from>.ass:<line>` (a single referrer)
+   - `// <rel>.ass referenced by:` followed by one `//   <from>.ass:<line>` line per referrer
+   - `// main.ass (main)`
+   - `// <rel>.ass (continued)` when an include in the middle of a file interrupted it
+3. Line endings are CRLF by default.
+
+The line map JSON is `{ version: 1, output, sources: [paths relative to the project root], lines: [[sourceIndex, sourceLine] | null, ...] }`, where index i is output line i+1 and null marks a generated line.
+
+## Commands
+
+Everything runs through npm scripts in the repo root (`node toolchain/cli.ts …`); pass options after `--`:
+
+```
+npm run create                    start a new project in the repo root (angelspace.yaml, src/, .vscode/)
+npm run build [-- -D k=v ...]     compile        npm run build:install   compile + install
+npm run watch                     recompile on change
+npm run where -- <line>           compiled line -> .ass file:line
+npm run vars                      list variables
+npm run help                      help (version: npm run angelspace -- version)
+```
+
+Always give users the npm form above; there is no global `angelspace` command. Every script is `node toolchain/cli.ts <command>`, which always serves the folder `toolchain/` sits in (the angelspace.yaml there) unless `-c` is given. Before `npm run create` there is no project and the other commands say to run it. Options go after `--` (`npm run build -- -D channel=release`):
+
+```
+-c cfg  -D k=v (repeatable)  --install  --force  --no-watermark  --no-headers  -q | -v | --debug  --no-color
+```
+
+`npm run create` explains what it will add, asks for name / target exe / module / template and confirms; it never overwrites existing files. Options skip the questions: `-- --name N --target EXE --module DLL --template starter|minimal --yes`. `serve` is internal: the editor interface the VS Code extension starts (JSON lines over stdio, see toolchain/serve.ts). Updating the toolchain = pulling this repo's upstream commits. `vars` prints each variable with its origin (builtin/config/cli), type and literal.
+
+Exit codes are 0 for OK, 1 for a build error and 2 for bad arguments. Errors print `file:line:col`, a code frame, and an "included from" chain.
+
+## Editor protocol (`serve`, toolchain/serve.ts, protocol 1)
+
+One JSON object per line: request `{id, method, params}`, response `{id, result}` or `{id, error: {message}}`. Methods: `hello` → `{protocol, version, root, configPath}`; `analyze {overrides?, overlays?: {absPath: text}}` → snapshot (project info, variables with raw/literal forms, files, build order, referencedBy, inactive lines, diagnostics, error) without writing anything; `compile {overrides?, install?, force?, logLevel?}` → snapshot + `outFile`, `installedTo`, `buildHash`, `log[]`; `resolveInclude {spec, from}`; `where {line, outFile?}`; `shutdown`.
+
+## Library API (toolchain/project.ts)
+
+- `buildProject({ configPath, log, overrides?, readFile?, write?, watermark?, headers?, install?, force? })` returns `{ project, result, assembled, outFile, installedTo, diagnostics[], error?, ms }`. It never throws for source errors; those come back in `error` and `diagnostics`.
+  - `readFile(abs)` can supply unsaved contents.
+  - `result.inactive` maps each file index to the 1-based lines that sit in branches that aren't taken.
+  - `result.referencedBy` maps each file index to its `[{from, line}]` includes.
+- `loadProject(configPath, log, overrides)` returns `{ cfg, vars, origin }`.
+- `createLogger(level, writer?)` comes from `log.ts`, and `scaffold({ name, target, module, template })` from `templates.ts` returns `{ relPath: content }`.
+
+## VS Code extension (kodalee/angelspace-vscode)
+
+The extension activates on any workspace containing `angelspace.yaml`, or when the AngelSpace panel is opened. It is a helper only: for each project it starts `node toolchain/cli.ts serve` in the repo root and asks that toolchain for analysis, builds, include resolution and line mapping, so the editor always matches `npm run build`. Its features:
+
+- **Language support:** languages `angelspace` (`.ass`) and `angelscript` (`.as`), with grammars, snippets, and folding for `#[if]`/`#[endif]`.
+- **Completion:**
+  - after `#[`: directives and variables
+  - in `#[if ...]`: variables and `defined()`
+  - after `$`: variables, `__FILE__` and `__LINE__`
+  - in `#[include "...`: folders and `.ass` files
+  - after `ns::`: Angel API namespace members and project namespace/class members
+  - after `expr.`: members of the inferred type (project classes and their bases, Angel API types, string/array)
+  - plain identifiers: locals, class members, project symbols, the API, keywords
+- **Hover and signature help:** hovers for variables, includes, directives, API entries (with overloads) and project symbols; signature help for API and project calls.
+- **Navigation:** go to definition (includes, `$var` to its YAML line, symbols), outline, workspace symbols, include links.
+- **CodeLens** at the top of each file: "included by N files · #k in build order", "main", or "not included".
+- **Live diagnostics:**
+  - compiler errors and warnings as you type, unsaved buffers included
+  - unknown `ns::function` calls (Angel API typos, with suggestions)
+  - dimming of code in branches that aren't taken
+- **Building:**
+  - commands Compile (Ctrl+Alt+B) and Compile & Install (Ctrl+Alt+I), done by the project's system
+  - compile on save
+  - Ctrl+Shift+B runs `npm run build` (the npm task in the project's `.vscode/tasks.json`)
+  - a status bar item and an "AngelSpace" output channel (build log and system messages)
+- **Compiled-output navigation:** F12 on any line of `dist/*.as` opens the source line, header comments are links, and "Go to Source Line" takes a line number (Ctrl+Alt+G).
+- **AngelSpace activity-bar panel:** a "New AngelSpace Project" welcome when there are no projects; otherwise per project the actions, problems, build order and variables. New Project (runs `npx create-angelspace@latest` in a terminal) is also in File > New File… and the explorer folder context menu. If a project's `toolchain/` is missing or won't start, the panel offers Install / Update and Restart.
+- **Commands:** angelspace.compile, compileAndInstall, newProject, updateSystem, restartSystem, goToSourceLine, openCompiled, showVariables, overrideVariable, clearOverrides, searchApi, openApiDocs, updateApiDocs, showOutput, refreshProjects.
+- **Settings:**
+  - `angelspace.nodePath` ("" = `node` on PATH; must be 22.18+)
+  - `angelspace.compileOnSave` (true)
+  - `angelspace.installOnCompile` (false)
+  - `angelspace.overrides` ({})
+  - `angelspace.logLevel` ("")
+  - `angelspace.liveDiagnostics` (true)
+  - `angelspace.dimInactiveCode` (true)
+  - `angelspace.apiDiagnostics` (true)
+- **API index:** `data/angel-api.json` is generated from https://echo-23.gitbook.io/angel/llms-full.txt by `scripts/gen-api.ts`. "Update Angel API Docs" refreshes it at runtime.
+
+## Angel API essentials (for writing scripts)
+
+See https://echo-23.gitbook.io/angel/llms-full.txt for the full reference. The most used calls:
+
+- **Attaching:** `process::attach(string name)` returns `attach_data` (`.pid` is 0 on failure), `process::get_module_base(string)`, `process::is_alive()`.
+- **Reading memory:** `process::read_uint64/uint32/float/...(uint64 address)` and `process::read_buffer(addr, size)`, which returns a `memory_buffer@` with `.read_*(offset)`. Writing is done with `process::write_*`.
+- **Threads and rendering:** `create_thread(int tps, thread_callback@ cb)` (ticking threads only from `main()`) and `on_render(thread_callback@ cb)`. Inside render callbacks use `render::draw_text_outlined(x, y, text, r, g, b, a)`, `render::draw_line(...)` and so on.
+- **Menu:** `ui::config_path(name)`, `ui::add_tab/add_subtab/add_category(label, category_pos::left_top)`, `ui::add_checkbox(label, default, config_key)`, `ui::add_slider(...)`, `ui::add_color_picker(...)`, `ui::get(widget)`.
+- **Logging:** `console::log(msg)`.
+
+## Minimal project
+
+angelspace.yaml:
+
+```yaml
+name: demo
+target: game.exe
+defines:
+  version: "0.1.0"
+  channel: dev
+```
+
+src/config.ass:
+
+```
+namespace Config {
+    const string Process = $target;
+    const int UpdateHz = 64;
+}
+```
+
+src/main.ass:
+
+```
+#[include "/config.ass"]
+
+void update_tick() {
+    if (!process::is_alive()) process::attach(Config::Process);
+}
+
+bool main() {
+    #[if channel == "dev"]
+    console::log("[#[projectName]] v#[version] dev build " + $compileTime);
+    #[endif]
+    process::attach(Config::Process);
+    create_thread(Config::UpdateHz, @update_tick);
+    return true;
+}
+```
+
+Compiled `dist/demo.as` contains the watermark, then the `config.ass` body, then the `main.ass` body, with every directive resolved.
+
+## Files
+
+- [README.md](README.md): getting started, full reference
+- [toolchain/templates.ts](toolchain/templates.ts): what `npm run create` writes (starter / minimal)
+- [toolchain/compiler.ts](toolchain/compiler.ts): preprocessor (the authoritative semantics)
+- [toolchain/serve.ts](toolchain/serve.ts): the editor protocol
+- https://github.com/kodalee/angelspace-vscode: the VS Code extension
+- https://github.com/kodalee/create-angelspace: `npx create-angelspace@latest` (optional clone + create one-liner)

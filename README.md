@@ -4,7 +4,7 @@
 
 ---
 
-Angel loads exactly one `.as` (**a**ngel-**s**pace-**s**cript) file per script. This can make it harder to maintain, read, and collaborate on your script. AngelSpace changes that by giving you a workspace to write as many `.ass` files and compiles them into that single `.as` file:
+Angel loads exactly one `.as` (**a**ngel-**s**cript) file per script. This can make it harder to maintain, read, and collaborate on your script. AngelSpace changes that by giving you a workspace to write as many `.ass` files and compiles them into that single `.as` file:
 
 ```c
 #[include "config.ass"]

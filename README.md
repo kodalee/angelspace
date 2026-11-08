@@ -22,23 +22,21 @@ bool main() {
 npm run build          # → dist/my_script.as, ready for Angel
 ```
 
-This repository **is** your workspace. Clone it, run `npm run create`, and write your script in
-`src/` — the compiler (`toolchain/`) comes with it, and every command is an npm script.
+Pssst!... It's easy to get started too!
 
-| Repository | |
-|---|---|
-| [kodalee/angelspace](https://github.com/kodalee/angelspace) | **this repo** — clone it and work in it |
-| [kodalee/create-angelspace](https://github.com/kodalee/create-angelspace) | `npx create-angelspace@latest` — an optional one-liner that does the clone + create for you |
+<img src="https://kcdn.ursinelabs.com/2026-11/08/mintty_tcjR3dvXhf.gif" />
+
+You can either run `npx create-angelspace@latest` **or** clone this repository, run `npm run create`, and write your script in
+`src/` — the compiler (`toolchain/`) comes with it, and every command is an npm script.
 
 ## Contents
 
 - [Getting started](#getting-started)
 - [Project layout](#project-layout)
-- [Commands](#commands) — everything you run, all through npm
-- [Language reference](#language-reference) — includes, conditionals, variables
-- [angelspace.yaml reference](#angelspaceyaml-reference)
-- [The compiled output](#the-compiled-output)
-- [Editor protocol](#editor-protocol)
+- [Commands](#commands)
+- [Language reference](#language-reference)
+- [Configuration](#angelspaceyaml-reference)
+- [Output](#the-compiled-output)
 - [Developing the toolchain](#developing-the-toolchain)
 - [For AI assistants](#for-ai-assistants)
 
@@ -49,7 +47,7 @@ directly, no build step) and [Git](https://git-scm.com). Angel loads scripts fro
 
 ```sh
 git clone https://github.com/kodalee/angelspace my_script
-cd my_script
+cd your_script
 npm install
 npm run create            # starts a new project in this folder: angelspace.yaml + src/
 npm run build             # → dist/my_script.as
@@ -67,7 +65,7 @@ Then reopen the Angel menu so it picks up the new script. For editor support ins
 ## Project layout
 
 ```
-my_script/
+your_script/
   toolchain/             the AngelSpace compiler and CLI (TypeScript, run directly by Node)
     test/                the toolchain's own tests
   src/                   your code                                    ┐
@@ -108,24 +106,20 @@ Options go after `--`, and work with `build`, `build:install`, `watch`, `where` 
 ```
 npm run build -- -D channel=release --no-watermark
 
-  -D, --define <name=value>      set/override a variable (repeatable; also -Dname=value)
-      --install                  copy the output into the Angel scripts folder
+  -D, --define <name=value>      define or overwrite a variable (-Dname=value is accepted)
+      --install                  copy the output into the Angel scripts folder automatically
       --force                    let --install overwrite a script AngelSpace didn't write
       --no-watermark             omit the watermark
-      --no-headers               omit the per-file "referenced by" headers
-  -c, --config <file>            config (default: the angelspace.yaml in the repo root)
+      --no-headers               omit the per-file "referenced by" headers (not recommended for debugging)
+  -c, --config <file>            config (by default its the angelspace.yaml in the repo root)
   -q, --quiet                    errors and warnings only
-  -v, --verbose                  verbose (default; shows the include tree as it parses)
+  -v, --verbose                  verbose (shows the include tree as it parses)
       --debug                    everything, including each injection and timings
       --no-color                 plain output
 ```
 
 `npm run create` takes `--name <name>`, `--target <exe>`, `--module <dll>`, `--template starter|minimal`
 and `--yes` (ask nothing).
-
-Exit code is `0` on success, `1` on a build error, `2` on bad arguments. Every script is
-`node toolchain/cli.ts <command>`; Bun works too (`bun toolchain/cli.ts compile`). The one command
-that isn't a script is `serve`, the [editor protocol](#editor-protocol) the VS Code extension starts.
 
 To update the toolchain, pull this repo's latest commits (`git pull` from the upstream remote) —
 your `src/` and `angelspace.yaml` aren't part of the upstream repo, so they don't conflict.
@@ -276,17 +270,6 @@ When Angel reports an error at a line of the compiled file, run `npm run where -
 
 `--install` won't overwrite a script in the Angel folder unless AngelSpace wrote it (its first line
 has the watermark), or you pass `--force` / set `install.overwrite: true`.
-
-## Editor protocol
-
-The `serve` command is how editors use the toolchain. The VS Code extension starts it in the repo
-root (`node toolchain/cli.ts serve`) and never compiles anything itself, so what the editor shows
-is exactly what `npm run build` does. The wire format is one JSON object per line on stdin/stdout:
-
-```jsonc
-→ {"id": 1, "method": "analyze", "params": {"overrides": [["channel", "release"]], "overlays": {"C:/p/src/main.ass": "unsaved text"}}}
-← {"id": 1, "result": {"project": {...}, "result": {...}, "diagnostics": [...]}}
-```
 
 | Method | |
 |---|---|
